@@ -1,0 +1,415 @@
+diff -Naur src/ComputeAngles.C patch_src/ComputeAngles.C
+--- src/ComputeAngles.C	2018-10-26 05:04:09.118993557 -0400
++++ patch_src/ComputeAngles.C	2018-10-26 05:14:49.035340202 -0400
+@@ -80,6 +80,10 @@
+   Vector r32 = lattice.delta(pos3,pos2);
+   register BigReal d32inv = r32.rlength();
+   int normal = value->normal;
++  Vector frc_urey;
++  
++  Vector r13 = lattice.delta(pos1,pos3);
++  Vector r23 = lattice.delta(pos2,pos3);
+ 
+   BigReal cos_theta = (r12*r32)*(d12inv*d32inv);
+   //  Make sure that the cosine value is acceptable.  With roundoff, you
+@@ -133,6 +137,10 @@
+   Force force3 = c2*(r32*(d32inv*cos_theta) - r12*d12inv);
+   force2 += force3;  force2 *= -1;
+ 
++  frc_urey.x = 0;
++  frc_urey.y = 0;
++  frc_urey.z = 0;
++
+   //  Check to see if we need to do the Urey-Bradley term
+   if (value->k_ub)
+   {
+@@ -153,6 +161,8 @@
+ 	diff *= -2.0*k_ub / d13;
+ 	r13 *= diff;
+ 
++	frc_urey = r13;
++
+ 	force1 += r13;
+ 	force3 -= r13;
+   }
+@@ -220,14 +230,38 @@
+     int p2 = p[1]->x[localIndex[1]].partition;
+     int p3 = p[2]->x[localIndex[2]].partition;
+     int pn = pressureProfileAtomTypes;
++    
++    pp_reduction(pressureProfileSlabs, n1, n3, 
++                p1, p3, pn,
++                (frc_urey.x) * r13.x, 
++		(frc_urey.y) * r13.y, 
++		(frc_urey.z) * r13.z,
++                pressureProfileData);
++
++    force1 -= frc_urey;
++    force3 += frc_urey;
++
+     pp_reduction(pressureProfileSlabs, n1, n2, 
+                 p1, p2, pn,
+-                force1.x * r12.x, force1.y * r12.y, force1.z * r12.z,
++                -(force2.x-force1.x) * r12.x/3, 
++		-(force2.y-force1.y) * r12.y/3, 
++		-(force2.z-force1.z) * r12.z/3,
++                pressureProfileData);
++    pp_reduction(pressureProfileSlabs, n1, n3, 
++                p1, p3, pn,
++                -(force3.x-force1.x) * r13.x/3, 
++		-(force3.y-force1.y) * r13.y/3, 
++		-(force3.z-force1.z) * r13.z/3,
+                 pressureProfileData);
+-    pp_reduction(pressureProfileSlabs, n3, n2, 
+-                p3, p2, pn,
+-                force3.x * r32.x, force3.y * r32.y, force3.z * r32.z,
++    pp_reduction(pressureProfileSlabs, n2, n3, 
++                p2, p3, pn,
++                -(force3.x-force2.x) * r23.x/3, 
++		-(force3.y-force2.y) * r23.y/3, 
++		-(force3.z-force2.z) * r23.z/3,
+                 pressureProfileData);
++
++
++
+   }
+ 
+  }
+diff -Naur src/ComputeBonds.C patch_src/ComputeBonds.C
+--- src/ComputeBonds.C	2018-10-26 05:04:09.130993207 -0400
++++ patch_src/ComputeBonds.C	2018-10-26 05:15:41.728804189 -0400
+@@ -40,6 +40,7 @@
+ void BondElem::computeForce(BondElem *tuples, int ntuple, BigReal *reduction, 
+                             BigReal *pressureProfileData)
+ {
++
+  SimParameters *const simParams = Node::Object()->simParameters;
+  const Lattice & lattice = tuples[0].p[0]->p->lattice;
+ 
+@@ -75,8 +76,8 @@
+   //DebugM(3, "::computeForce() -- starting with bond type " << bondType << std::endl);
+ 
+   // get the bond information
+-  Real k = value->k * scale;
+-  Real x0 = value->x0;
++  BigReal k = value->k * scale;
++  BigReal x0 = value->x0;
+ 
+   // compute vectors between atoms and their distances
+   const Vector r12 = lattice.delta(p[0]->x[localIndex[0]].position,
+@@ -156,7 +157,9 @@
+   reduction[virialIndex_ZY] += f12.z * r12.y;
+   reduction[virialIndex_ZZ] += f12.z * r12.z;
+ 
++
+   if (pressureProfileData) {
++
+     BigReal z1 = p[0]->x[localIndex[0]].position.z;
+     BigReal z2 = p[1]->x[localIndex[1]].position.z;
+     int n1 = (int)floor((z1-pressureProfileMin)/pressureProfileThickness);
+@@ -166,6 +169,8 @@
+     int p1 = p[0]->x[localIndex[0]].partition;
+     int p2 = p[1]->x[localIndex[1]].partition;
+     int pn = pressureProfileAtomTypes;
++
++
+     pp_reduction(pressureProfileSlabs,
+                 n1, n2, 
+                 p1, p2, pn, 
+diff -Naur src/ComputeDihedrals.C patch_src/ComputeDihedrals.C
+--- src/ComputeDihedrals.C	2018-10-26 05:04:09.128993265 -0400
++++ patch_src/ComputeDihedrals.C	2018-10-26 05:16:33.064307761 -0400
+@@ -75,6 +75,9 @@
+   const Position & pos3 = p[3]->x[localIndex[3]].position;
+   const Vector r34 = lattice.delta(pos2,pos3);
+ 
++  const Vector r13 = lattice.delta(pos0,pos2);
++  const Vector r14 = lattice.delta(pos0,pos3);
++  const Vector r24 = lattice.delta(pos1,pos3);
+   //  Calculate the cross products and distances
+   Vector A = cross(r12,r23);
+   register  BigReal rAinv = A.rlength();
+@@ -237,10 +240,6 @@
+     }
+ 
+   /* store the forces */
+-  //  p[0]->f[localIndex[0]] += f1;
+-  //  p[1]->f[localIndex[1]] += f2 - f1;
+-  //  p[2]->f[localIndex[2]] += f3 - f2;
+-  //  p[3]->f[localIndex[3]] += -f3;
+ 
+   p[0]->f[localIndex[0]].x += f1.x;
+   p[0]->f[localIndex[0]].y += f1.y;
+@@ -307,18 +306,66 @@
+     int p3 = p[2]->x[localIndex[2]].partition;
+     int p4 = p[3]->x[localIndex[3]].partition;
+     int pn = pressureProfileAtomTypes;
++
++
++	
++	double val1 = f1.x*r12.x+f2.x*r23.x+f3.x*r34.x;
++	double val2 = 0;
++	const Vector fA = f1;
++	const Vector fB = f2-f1;
++	const Vector fC = f3-f2;
++	const Vector fD = -f3;
++    // 2->1
+     pp_reduction(pressureProfileSlabs, n1, n2,
+                 p1, p2, pn,
+-                f1.x * r12.x, f1.y * r12.y, f1.z * r12.z,
++                -(fB.x-fA.x) * r12.x/4, 
++		-(fB.y-fA.y) * r12.y/4, 
++		-(fB.z-fA.z) * r12.z/4,
++                pressureProfileData);
++	val2 += (fB.x-fA.x) * r12.x/4;
++     // 3->1
++     pp_reduction(pressureProfileSlabs, n1, n3,
++                p1, p3, pn,
++                -(fC.x-fA.x) * r13.x/4, 
++		-(fC.y-fA.y) * r13.y/4, 
++		-(fC.z-fA.z) * r13.z/4,
++                pressureProfileData);
++	val2 += (fC.x-fA.x) * r13.x/4;
++     // 4->1
++     pp_reduction(pressureProfileSlabs, n1, n4,
++                p1, p4, pn,
++                -(fD.x-fA.x) * r14.x/4, 
++		-(fD.y-fA.y) * r14.y/4, 
++		-(fD.z-fA.z) * r14.z/4,
+                 pressureProfileData);
+-    pp_reduction(pressureProfileSlabs, n2, n3,
++	val2 += (fD.x-fA.x) * r14.x/4;
++
++     // 2->3
++     pp_reduction(pressureProfileSlabs, n2, n3,
+                 p2, p3, pn,
+-                f2.x * r23.x, f2.y * r23.y, f2.z * r23.z,
++                -(fC.x-fB.x) * r23.x/4, 
++		-(fC.y-fB.y) * r23.y/4, 
++		-(fC.z-fB.z) * r23.z/4,
++                pressureProfileData);
++	val2 += (fC.x-fB.x) * r23.x/4;
++     // 2->4
++     pp_reduction(pressureProfileSlabs, n2, n4,
++                p2, p4, pn,
++                -(fD.x-fB.x) * r24.x/4, 
++		-(fD.y-fB.y) * r24.y/4, 
++		-(fD.z-fB.z) * r24.z/4,
+                 pressureProfileData);
+-    pp_reduction(pressureProfileSlabs, n3, n4,
++	val2 += (fD.x-fB.x) * r24.x/4;
++     // 3->4
++     pp_reduction(pressureProfileSlabs, n3, n4,
+                 p3, p4, pn,
+-                f3.x * r34.x, f3.y * r34.y, f3.z * r34.z,
++                -(fD.x-fC.x) * r34.x/4, 
++		-(fD.y-fC.y) * r34.y/4, 
++		-(fD.z-fC.z) * r34.z/4,
+                 pressureProfileData);
++	val2 += (fD.x-fC.x) * r34.x/4;
++
++
+   }
+ 
+  }
+diff -Naur src/ComputeImpropers.C patch_src/ComputeImpropers.C
+--- src/ComputeImpropers.C	2018-10-26 05:04:09.068995014 -0400
++++ patch_src/ComputeImpropers.C	2018-10-26 05:10:58.689054790 -0400
+@@ -95,6 +95,9 @@
+   const Vector r12 = lattice.delta(pos0,pos1);
+   const Vector r23 = lattice.delta(pos1,pos2);
+   const Vector r34 = lattice.delta(pos2,pos3);
++  const Vector r13 = lattice.delta(pos0,pos2);
++  const Vector r14 = lattice.delta(pos0,pos3);
++  const Vector r24 = lattice.delta(pos1,pos3);
+ 
+   //  Calculate the cross products
+   A = cross(r12,r23);
+@@ -283,18 +286,64 @@
+     int p3 = p[2]->x[localIndex[2]].partition;
+     int p4 = p[3]->x[localIndex[3]].partition;
+     int pn = pressureProfileAtomTypes;
++
++
++	double val1 = f1.x*r12.x+f2.x*r23.x+f3.x*r34.x;
++	double val2 = 0;
++	const Vector fA = f1;
++	const Vector fB = f2-f1;
++	const Vector fC = f3-f2;
++	const Vector fD = -f3;
++    // 2->1
+     pp_reduction(pressureProfileSlabs, n1, n2,
+                 p1, p2, pn,
+-                f1.x * r12.x, f1.y * r12.y, f1.z * r12.z,
++                -(fB.x-fA.x) * r12.x/4, 
++		-(fB.y-fA.y) * r12.y/4, 
++		-(fB.z-fA.z) * r12.z/4,
++                pressureProfileData);
++	val2 += (fB.x-fA.x) * r12.x/4;
++     // 3->1
++     pp_reduction(pressureProfileSlabs, n1, n3,
++                p1, p3, pn,
++                -(fC.x-fA.x) * r13.x/4, 
++		-(fC.y-fA.y) * r13.y/4, 
++		-(fC.z-fA.z) * r13.z/4,
++                pressureProfileData);
++	val2 += (fC.x-fA.x) * r13.x/4;
++     // 4->1
++     pp_reduction(pressureProfileSlabs, n1, n4,
++                p1, p4, pn,
++                -(fD.x-fA.x) * r14.x/4, 
++		-(fD.y-fA.y) * r14.y/4, 
++		-(fD.z-fA.z) * r14.z/4,
+                 pressureProfileData);
+-    pp_reduction(pressureProfileSlabs, n2, n3,
++	val2 += (fD.x-fA.x) * r14.x/4;
++
++     // 2->3
++     pp_reduction(pressureProfileSlabs, n2, n3,
+                 p2, p3, pn,
+-                f2.x * r23.x, f2.y * r23.y, f2.z * r23.z,
++                -(fC.x-fB.x) * r23.x/4, 
++		-(fC.y-fB.y) * r23.y/4, 
++		-(fC.z-fB.z) * r23.z/4,
++                pressureProfileData);
++	val2 += (fC.x-fB.x) * r23.x/4;
++     // 2->4
++     pp_reduction(pressureProfileSlabs, n2, n4,
++                p2, p4, pn,
++                -(fD.x-fB.x) * r24.x/4, 
++		-(fD.y-fB.y) * r24.y/4, 
++		-(fD.z-fB.z) * r24.z/4,
+                 pressureProfileData);
+-    pp_reduction(pressureProfileSlabs, n3, n4,
++	val2 += (fD.x-fB.x) * r24.x/4;
++     // 3->4
++     pp_reduction(pressureProfileSlabs, n3, n4,
+                 p3, p4, pn,
+-                f3.x * r34.x, f3.y * r34.y, f3.z * r34.z,
++                -(fD.x-fC.x) * r34.x/4, 
++		-(fD.y-fC.y) * r34.y/4, 
++		-(fD.z-fC.z) * r34.z/4,
+                 pressureProfileData);
++	val2 += (fD.x-fC.x) * r34.x/4;
++
+   }
+ 
+  }
+@@ -307,5 +356,6 @@
+   reduction->item(REDUCTION_BONDED_ENERGY_TI_1) += data[improperEnergyIndex_ti_1];
+   reduction->item(REDUCTION_BONDED_ENERGY_TI_2) += data[improperEnergyIndex_ti_2];
+   ADD_TENSOR(reduction,REDUCTION_VIRIAL_NORMAL,data,virialIndex);
++
+ }
+ 
+diff -Naur src/HomePatch.C patch_src/HomePatch.C
+--- src/HomePatch.C	2018-10-26 05:04:09.131993177 -0400
++++ patch_src/HomePatch.C	2018-10-26 05:31:35.646997405 -0400
+@@ -41,6 +41,7 @@
+ #include "ComputeGBIS.inl"
+ #include "Priorities.h"
+ #include "SortAtoms.h"
++#include "PressureProfile.h"
+ 
+ #include "ComputeQM.h"
+ #include "ComputeQMMgr.decl.h"
+@@ -2622,7 +2623,7 @@
+         }
+       }
+     }
+-    if ( icnt == 0 ) continue;  // no constraints
++   if ( icnt == 0 ) continue;  // no constraints
+     for ( i = 0; i < icnt; ++i ) {
+       refab[i] = ref[ial[i]] - ref[ibl[i]];
+     }
+@@ -2659,6 +2660,34 @@
+             dp *= invdt;
+             netdp[a] += dp;
+             netdp[b] -= dp;
++
++
++        if( virial != 0 )
++	{
++          int p1 = atom[ig+a].partition;
++          int p2 = atom[ig+b].partition;
++
++          int slab1 = (int)floor((pos[a].z-zmin)*idz);
++          if (slab1 < 0) slab1 += nslabs;
++          else if (slab1 >= nslabs) slab1 -= nslabs;
++
++          int slab2 = (int)floor((pos[b].z-zmin)*idz);
++          if (slab2 < 0) slab2 += nslabs;
++          else if (slab2 >= nslabs) slab2 -= nslabs;
++
++	  double vxx = dp.x * invdt * ( ref[a].x - ref[b].x);
++	  double vyy = dp.y * invdt * ( ref[a].y - ref[b].y);
++	  double vzz = dp.z * invdt * ( ref[a].z - ref[b].z);
++	  ppreduction->item(3*slab1+0) += vxx/2;
++	  ppreduction->item(3*slab1+1) += vyy/2;
++	  ppreduction->item(3*slab1+2) += vzz/2;
++	  
++	ppreduction->item(3*slab2+0) += vxx/2;
++	  ppreduction->item(3*slab2+1) += vyy/2;
++	  ppreduction->item(3*slab2+2) += vzz/2;
++
++		}
++
+           }
+           done = 0;
+         }
+@@ -2707,12 +2736,10 @@
+           else if (slab >= nslabs) slab -= nslabs;
+           ppoffset = 3*(slab + nslabs*partition);
+         }
+-        ppreduction->item(ppoffset  ) += vir.xx;
+-        ppreduction->item(ppoffset+1) += vir.yy;
+-        ppreduction->item(ppoffset+2) += vir.zz;
+       }
+     }
+-  }
++  
++   }
+   if ( dt && virial ) *virial += wc;
+ 
+   return 0;
+diff -Naur src/Sequencer.C patch_src/Sequencer.C
+--- src/Sequencer.C	2018-10-26 05:04:09.139992944 -0400
++++ patch_src/Sequencer.C	2018-10-26 05:01:09.241236889 -0400
+@@ -2071,9 +2071,13 @@
+         BigReal wxx = (fnormal.x + fnbond.x + fslow.x) * dx.x;
+         BigReal wyy = (fnormal.y + fnbond.y + fslow.y) * dx.y;
+         BigReal wzz = (fnormal.z + fnbond.z + fslow.z) * dx.z;
++
++#if 1 
++//	I HAD COMMENTED THIS OUT TO TEST IT!!!!
+         pressureProfileReduction->item(ppoffset  ) -= wxx;
+         pressureProfileReduction->item(ppoffset+1) -= wyy;
+         pressureProfileReduction->item(ppoffset+2) -= wzz;
++#endif
+       }
+     }
+   }
+diff -Naur src/SimParameters.C patch_src/SimParameters.C
+--- src/SimParameters.C	2018-10-26 05:04:09.139992944 -0400
++++ patch_src/SimParameters.C	2018-10-26 05:35:34.917022607 -0400
+@@ -3683,7 +3683,10 @@
+          ewaldcof_hi = ewaldcof;
+        }
+      }
+-     PMEEwaldCoefficient = ewaldcof;
++//     PMEEwaldCoefficient = ewaldcof;
++
++     PMEEwaldCoefficient = 0.32;
++     iout << iWARN << "Setting PMEEwaldCoefficient to 0.32.\n" << endi;
+ 
+ #ifdef NAMD_CUDA
+      bool one_device_per_node = deviceCUDA->one_device_per_node();  // only checks node 0
+@@ -5489,7 +5492,7 @@
+ 
+    if (berendsenPressureOn || langevinPistonOn) {
+      if (rigidBonds != RIGID_NONE && useGroupPressure == FALSE) {
+-       useGroupPressure = TRUE;
++      // useGroupPressure = TRUE;
+        iout << iWARN << "Option useGroupPressure is being enabled "
+             << "due to pressure control with rigidBonds.\n" << endi;
+      }
